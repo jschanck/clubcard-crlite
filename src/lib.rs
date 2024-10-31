@@ -15,4 +15,7 @@ pub use query::{
     LogId, Timestamp, TimestampInterval,
 };
 
+pub mod partition;
+pub mod partition_metadata;
+
 pub(crate) const W: usize = 4;
