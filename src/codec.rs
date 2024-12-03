@@ -1,6 +1,9 @@
+use std::collections::HashMap;
+
 use clubcard::{Clubcard, ClubcardIndex, ClubcardIndexEntry};
 
 use crate::W;
+use crate::partition::PartitionMetadata;
 use crate::query::{CRLiteCoverage, ClubcardError};
 
 /// A type with a TLS-like binary encoding.
@@ -18,18 +21,20 @@ pub(crate) trait Codec: Sized {
 
 // ```
 // struct {
-//     CRLiteCoverage universe;
-//     ClubcardIndex  index;
-//     FilterColumn   approx_filter<count>;   // uint8 count, then `count` columns
-//     FilterColumn   exact_filter;
+//     CRLiteCoverage    universe;
+//     PartitionMetadata partition;
+//     ClubcardIndex     index;
+//     FilterColumn      approx_filter<count>;   // uint8 count, then `count` columns
+//     FilterColumn      exact_filter;
 // } Clubcard;
 // ```
 //
 // where `FilterColumn` is `uint64 words<count>` (a uint32 count followed by
 // that many big-endian words).
-impl Codec for Clubcard<W, CRLiteCoverage, ()> {
+impl Codec for Clubcard<W, CRLiteCoverage, PartitionMetadata> {
     fn encode(&self, buf: &mut Vec<u8>) -> Result<(), ClubcardError> {
         self.universe.encode(buf)?;
+        self.partition.encode(buf)?;
         self.index.encode(buf)?;
 
         encode_len::<1>(self.approx_filter.len(), buf)?;
@@ -42,6 +47,7 @@ impl Codec for Clubcard<W, CRLiteCoverage, ()> {
 
     fn read(buf: &[u8]) -> Result<(Self, &[u8]), ClubcardError> {
         let (universe, buf) = CRLiteCoverage::read(buf)?;
+        let (partition, buf) = PartitionMetadata::read(buf)?;
         let (index, buf) = ClubcardIndex::read(buf)?;
         let (column_count, mut buf) = read_len::<1>(buf)?;
 
@@ -57,13 +63,61 @@ impl Codec for Clubcard<W, CRLiteCoverage, ()> {
         Ok((
             Clubcard {
                 universe,
-                partition: (),
+                partition,
                 index,
                 approx_filter,
                 exact_filter,
             },
             buf,
         ))
+    }
+}
+
+// ```
+// struct {
+//     opaque issuer_spki_hash[32];
+//     uint64 not_after_boundaries<count>;   // uint16 count, then `count` timestamps
+// } PartitionEntry;
+//
+// PartitionEntry partition<count>;          // uint32 count, then `count` entries
+// ```
+//
+// Issuers with no partition are omitted, so an unpartitioned clubcard encodes
+// a zero count here.
+impl Codec for PartitionMetadata {
+    fn encode(&self, buf: &mut Vec<u8>) -> Result<(), ClubcardError> {
+        encode_len::<4>(self.0.len(), buf)?;
+        for (issuer, boundaries) in &self.0 {
+            buf.extend_from_slice(issuer);
+            encode_seq::<2, u64>(boundaries, buf)?;
+        }
+        Ok(())
+    }
+
+    fn read(buf: &[u8]) -> Result<(Self, &[u8]), ClubcardError> {
+        let (count, mut buf) = read_len::<4>(buf)?;
+
+        let mut map = HashMap::with_capacity(count);
+        for _ in 0..count {
+            let Some((issuer, rest)) = buf.split_first_chunk::<32>() else {
+                return Err(ClubcardError::Deserialize(
+                    "not enough bytes for PartitionEntry issuer".into(),
+                ));
+            };
+
+            let (boundary_count, mut rest) = read_len::<2>(rest)?;
+            let mut boundaries = Vec::with_capacity(boundary_count);
+            for _ in 0..boundary_count {
+                let (boundary, tail) = u64::read(rest)?;
+                boundaries.push(boundary);
+                rest = tail;
+            }
+
+            map.insert(*issuer, boundaries);
+            buf = rest;
+        }
+
+        Ok((Self(map), buf))
     }
 }
 

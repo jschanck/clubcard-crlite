@@ -27,11 +27,7 @@ impl PartitionRecord {
 }
 
 pub fn log2(num: f64) -> f64 {
-    if num == 0.0 {
-        0.0
-    } else {
-        num.log2()
-    }
+    if num == 0.0 { 0.0 } else { num.log2() }
 }
 
 fn size_lower_bound_bytes(ok_count: usize, revoked_count: usize) -> f64 {
@@ -108,6 +104,5 @@ pub fn partition_metadata(records: Vec<PartitionRecord>) -> (Vec<u64>, u64) {
 
     partition_meta.reverse();
 
-    (partition_meta, dp[len-1].0)
+    (partition_meta, dp[len - 1].0)
 }
-
