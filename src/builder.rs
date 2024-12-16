@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use crate::partition::PartitionMetadata;
+use crate::partition::PartitionIndex;
 use crate::query::{
     CRLiteCoverage, CRLiteKey, CRLiteQuery, IssuerSpkiHash, LogId, Timestamp, TimestampInterval,
 };
@@ -99,7 +99,7 @@ impl CRLiteBuilderItem {
         issuer: IssuerSpkiHash,
         serial: Vec<u8>,
         not_after: u64,
-        partition_metadata: &PartitionMetadata,
+        partition_metadata: &PartitionIndex,
     ) -> Self {
         let mut block_id = issuer.0.to_vec();
 
@@ -127,7 +127,7 @@ impl CRLiteBuilderItem {
         issuer: IssuerSpkiHash,
         serial: Vec<u8>,
         not_after: u64,
-        partition_metadata: &PartitionMetadata,
+        partition_metadata: &PartitionIndex,
     ) -> Self {
         let mut block_id = issuer.0.to_vec();
 
@@ -219,7 +219,7 @@ mod tests {
                 if clubcard.unchecked_contains(&CRLiteQuery::new_from_metadata(
                     &key,
                     None,
-                    &PartitionMetadata::default(),
+                    &PartitionIndex::default(),
                 )) {
                     included += 1;
                 } else {
@@ -239,7 +239,7 @@ mod tests {
             !clubcard.unchecked_contains(&CRLiteQuery::new_from_metadata(
                 &key,
                 None,
-                &PartitionMetadata::default()
+                &PartitionIndex::default()
             ))
         );
 
@@ -250,11 +250,8 @@ mod tests {
 
         // Test that calling contains() without a timestamp results in a NotInUniverse return
         let revoked_serial_key = CRLiteKey::new(&issuer, &revoked_serial, 0);
-        let query = CRLiteQuery::new_from_metadata(
-            &revoked_serial_key,
-            None,
-            &PartitionMetadata::default(),
-        );
+        let query =
+            CRLiteQuery::new_from_metadata(&revoked_serial_key, None, &PartitionIndex::default());
         assert!(matches!(
             clubcard.contains(&query),
             Membership::NotInUniverse
@@ -267,7 +264,7 @@ mod tests {
         let query = CRLiteQuery::new_from_metadata(
             &revoked_serial_key,
             Some((log_id, timestamp)),
-            &PartitionMetadata::default(),
+            &PartitionIndex::default(),
         );
         assert!(matches!(clubcard.contains(&query), Membership::Member));
 
@@ -277,7 +274,7 @@ mod tests {
         let query = CRLiteQuery::new_from_metadata(
             &nonrevoked_serial_key,
             Some((log_id, timestamp)),
-            &PartitionMetadata::default(),
+            &PartitionIndex::default(),
         );
         assert!(matches!(clubcard.contains(&query), Membership::Nonmember));
 
@@ -287,7 +284,7 @@ mod tests {
         let query = CRLiteQuery::new_from_metadata(
             &revoked_serial_key,
             Some((log_id, timestamp)),
-            &PartitionMetadata::default(),
+            &PartitionIndex::default(),
         );
         assert!(matches!(
             clubcard.contains(&query),
@@ -313,7 +310,7 @@ mod tests {
         for j in 0..universe_size {
             let serial = j.to_le_bytes();
             let key = CRLiteKey::new(&issuer, &serial, 0);
-            let query = CRLiteQuery::new_from_metadata(&key, None, &PartitionMetadata::default());
+            let query = CRLiteQuery::new_from_metadata(&key, None, &PartitionIndex::default());
             assert_eq!(direct.unchecked_contains(&query), j < subset_size);
             assert_eq!(inverted.unchecked_contains(&query), j < subset_size);
         }
@@ -333,8 +330,8 @@ mod tests {
         universe_size: usize,
         subset_size: usize,
         inverted: bool,
-    ) -> Clubcard<4, CRLiteCoverage, PartitionMetadata> {
-        let partition_metadata = PartitionMetadata::default();
+    ) -> Clubcard<4, CRLiteCoverage, PartitionIndex> {
+        let partition_metadata = PartitionIndex::default();
         let item = |j: usize| {
             if j < subset_size {
                 CRLiteBuilderItem::revoked(
@@ -405,7 +402,7 @@ mod tests {
                     let serial = j.to_le_bytes();
                     let key = CRLiteKey::new(&issuer, &serial, 0);
                     let query =
-                        CRLiteQuery::new_from_metadata(&key, None, &PartitionMetadata::default());
+                        CRLiteQuery::new_from_metadata(&key, None, &PartitionIndex::default());
                     assert_eq!(
                         crlite.as_ref().unchecked_contains(&query),
                         restored.as_ref().unchecked_contains(&query),
@@ -418,7 +415,7 @@ mod tests {
     fn build_clubcard() -> (
         [usize; 5],
         usize,
-        Clubcard<4, CRLiteCoverage, PartitionMetadata>,
+        Clubcard<4, CRLiteCoverage, PartitionIndex>,
     ) {
         let subset_sizes = [1 << 17, 1 << 16, 1 << 15, 1 << 14, 1 << 13];
         let universe_size = 1 << 18;
@@ -432,7 +429,7 @@ mod tests {
                     IssuerSpkiHash([i as u8; 32]),
                     j.to_le_bytes().to_vec(),
                     0,
-                    &PartitionMetadata::default(),
+                    &PartitionIndex::default(),
                 ));
             }
             r.set_universe_size(universe_size);
@@ -460,14 +457,14 @@ mod tests {
                         IssuerSpkiHash([i as u8; 32]),
                         j.to_le_bytes().to_vec(),
                         0,
-                        &PartitionMetadata::default(),
+                        &PartitionIndex::default(),
                     )
                 } else {
                     CRLiteBuilderItem::not_revoked(
                         IssuerSpkiHash([i as u8; 32]),
                         j.to_le_bytes().to_vec(),
                         0,
-                        &PartitionMetadata::default(),
+                        &PartitionIndex::default(),
                     )
                 });
             }
@@ -493,7 +490,7 @@ mod tests {
         );
 
         let clubcard = clubcard_builder
-            .build::<CRLiteQuery>(CRLiteCoverage(log_coverage), PartitionMetadata::default());
+            .build::<CRLiteQuery>(CRLiteCoverage(log_coverage), PartitionIndex::default());
         println!("{}", clubcard);
         (subset_sizes, universe_size, clubcard)
     }

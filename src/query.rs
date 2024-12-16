@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 
 use crate::W;
 use crate::codec::{Codec, encode_len, read_len};
-use crate::partition::PartitionMetadata;
+use crate::partition::PartitionIndex;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct IssuerSpkiHash(pub [u8; 32]);
@@ -225,7 +225,7 @@ impl<'a> CRLiteQuery<'a> {
     pub fn new_from_metadata(
         key: &'a CRLiteKey<'a>,
         log_timestamp: Option<(LogId, Timestamp)>,
-        partition_meta: &PartitionMetadata,
+        partition_meta: &PartitionIndex,
     ) -> CRLiteQuery<'a> {
         // obtain the partiton index using binary search
         let mut block_id = key.issuer.0.to_vec();
@@ -293,7 +293,7 @@ impl Queryable<W> for CRLiteQuery<'_> {
     // The set of CRLiteKeys is partitioned by issuer, and each
     // CRLiteKey knows its issuer. So there's no need for additional
     // partition metadata.
-    type PartitionMetadata = PartitionMetadata;
+    type PartitionMetadata = PartitionIndex;
 
     fn in_universe(&self, universe: &Self::UniverseMetadata) -> bool {
         let Some((log_id, timestamp)) = self.log_timestamp else {
@@ -355,16 +355,16 @@ impl From<Membership> for CRLiteStatus {
     }
 }
 
-pub struct CRLiteClubcard(Clubcard<W, CRLiteCoverage, PartitionMetadata>);
+pub struct CRLiteClubcard(Clubcard<W, CRLiteCoverage, PartitionIndex>);
 
-impl From<Clubcard<W, CRLiteCoverage, PartitionMetadata>> for CRLiteClubcard {
-    fn from(inner: Clubcard<W, CRLiteCoverage, PartitionMetadata>) -> CRLiteClubcard {
+impl From<Clubcard<W, CRLiteCoverage, PartitionIndex>> for CRLiteClubcard {
+    fn from(inner: Clubcard<W, CRLiteCoverage, PartitionIndex>) -> CRLiteClubcard {
         CRLiteClubcard(inner)
     }
 }
 
-impl AsRef<Clubcard<W, CRLiteCoverage, PartitionMetadata>> for CRLiteClubcard {
-    fn as_ref(&self) -> &Clubcard<W, CRLiteCoverage, PartitionMetadata> {
+impl AsRef<Clubcard<W, CRLiteCoverage, PartitionIndex>> for CRLiteClubcard {
+    fn as_ref(&self) -> &Clubcard<W, CRLiteCoverage, PartitionIndex> {
         &self.0
     }
 }
@@ -432,16 +432,45 @@ impl std::fmt::Display for CRLiteClubcard {
     }
 }
 
+// The V3 encoding predates partitioning; it stores a unit partition. This shim
+// borrows a partitioned clubcard's fields to reproduce that layout for bincode.
+#[cfg(feature = "bincode")]
+#[derive(Serialize)]
+struct ClubcardV3<'a> {
+    universe: &'a CRLiteCoverage,
+    partition: (),
+    index: &'a ClubcardIndex,
+    approx_filter: &'a Vec<Vec<u64>>,
+    exact_filter: &'a Vec<u64>,
+}
+
 impl CRLiteClubcard {
     /// Serialize this clubcard.
+    ///
+    /// A clubcard with a non-empty [`PartitionIndex`] cannot be serialized as
+    /// [`Encoding::V3`], which has no way to represent it.
     pub fn to_bytes(&self, encoding: Encoding) -> Result<Vec<u8>, ClubcardError> {
         let mut out = Vec::with_capacity(2 + self.0.approximate_size_of());
         encoding.encode(&mut out)?;
 
         match encoding {
             #[cfg(feature = "bincode")]
-            Encoding::V3 => bincode::serialize_into(&mut out, &self.0)
-                .map_err(|error| ClubcardError::Serialize(error.into()))?,
+            Encoding::V3 => {
+                if !self.0.partition.0.is_empty() {
+                    return Err(ClubcardError::Serialize(
+                        "a partitioned clubcard cannot be encoded as V3".into(),
+                    ));
+                }
+                let v3 = ClubcardV3 {
+                    universe: &self.0.universe,
+                    partition: (),
+                    index: &self.0.index,
+                    approx_filter: &self.0.approx_filter,
+                    exact_filter: &self.0.exact_filter,
+                };
+                bincode::serialize_into(&mut out, &v3)
+                    .map_err(|error| ClubcardError::Serialize(error.into()))?
+            }
             Encoding::V4 => self.0.encode(&mut out)?,
         }
 
@@ -452,10 +481,17 @@ impl CRLiteClubcard {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ClubcardError> {
         match Encoding::read(bytes)? {
             #[cfg(feature = "bincode")]
-            (Encoding::V3, rest) => match bincode::deserialize(rest) {
-                Ok(clubcard) => Ok(Self(clubcard)),
-                Err(error) => Err(ClubcardError::Deserialize(error.into())),
-            },
+            (Encoding::V3, rest) => {
+                let clubcard: Clubcard<W, CRLiteCoverage, ()> = bincode::deserialize(rest)
+                    .map_err(|error| ClubcardError::Deserialize(error.into()))?;
+                Ok(Self(Clubcard {
+                    universe: clubcard.universe,
+                    partition: PartitionIndex::from(()),
+                    index: clubcard.index,
+                    approx_filter: clubcard.approx_filter,
+                    exact_filter: clubcard.exact_filter,
+                }))
+            }
             (Encoding::V4, rest) => {
                 let (clubcard, rest) = Clubcard::read(rest)?;
                 if !rest.is_empty() {
@@ -476,7 +512,7 @@ impl CRLiteClubcard {
         self.0.index()
     }
 
-    pub fn partition(&self) -> &PartitionMetadata {
+    pub fn partition(&self) -> &PartitionIndex {
         self.0.partition()
     }
 
