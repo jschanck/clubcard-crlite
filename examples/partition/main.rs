@@ -36,7 +36,7 @@ fn main() -> std::process::ExitCode {
     };
     let mut meta_file = File::create(&meta_path).unwrap();
 
-    let mut partition_builder = PartitionBuilder::new(
+    let partition_builder = PartitionBuilder::new(
         &revoked_dir,
         &known_dir,
         &output_partition_revoked_dir,
