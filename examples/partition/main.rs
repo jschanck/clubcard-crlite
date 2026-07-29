@@ -3,10 +3,11 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /* This program takes a revoked directory path and a known directory path, then
-* performs the partition of files on disk and output the serialized partition metadata
+* chooses a partition of each issuer's certificates by notAfter date and
+* outputs the serialized partition metadata.
 * */
 
-use clubcard_crlite::partition::PartitionBuilder;
+use clubcard_crlite::partition::{PartitionBuilder, ReasonSet};
 use std::env::{args, current_dir};
 use std::fs::File;
 use std::io::Write;
@@ -15,18 +16,23 @@ use std::process::ExitCode;
 
 fn main() -> std::process::ExitCode {
     let mut args = args();
-    let _program_path = args.next().unwrap();
+    let program_path = args.next().unwrap();
 
-    let revoked_dir = PathBuf::from(args.next().expect("Expect revoked directory path"));
+    let Some(revoked_dir) = args.next().map(PathBuf::from) else {
+        eprintln!("Usage: {program_path} <revoked dir> <known dir> [reason set] [meta file]");
+        eprintln!("       reason set is one of all (the default), specified, or priority");
+        return ExitCode::FAILURE;
+    };
     let known_dir = PathBuf::from(args.next().expect("Expect known directory path"));
-    let output_partition_revoked_dir = PathBuf::from(
-        args.next()
-            .expect("Expect directory path for revoked certificates"),
-    );
-    let output_partition_known_dir = PathBuf::from(
-        args.next()
-            .expect("Expect directory path for partitioned known certificates"),
-    );
+    let reason_set = match args.next().as_deref() {
+        None | Some("all") => ReasonSet::All,
+        Some("specified") => ReasonSet::Specified,
+        Some("priority") => ReasonSet::Priority,
+        Some(other) => {
+            eprintln!("Unknown reason set {other:?}");
+            return ExitCode::FAILURE;
+        }
+    };
     let meta_path = if let Some(path) = args.next() {
         PathBuf::from(path)
     } else {
@@ -36,13 +42,8 @@ fn main() -> std::process::ExitCode {
     };
     let mut meta_file = File::create(&meta_path).unwrap();
 
-    let partition_builder = PartitionBuilder::new(
-        &revoked_dir,
-        &known_dir,
-        &output_partition_revoked_dir,
-        &output_partition_known_dir,
-    );
-    let partition_metadata = partition_builder.partition_directory();
+    let partition_builder = PartitionBuilder::new(&revoked_dir, &known_dir, reason_set);
+    let partition_metadata = partition_builder.build();
     let bytes = meta_file
         .write(&bincode::serialize(&partition_metadata).unwrap())
         .unwrap();
